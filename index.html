@@ -226,6 +226,8 @@
     let missionCurve = null;
     let missionPoints = [];
     let missionProgress = 0;
+    let missionMode = false;
+    const missionOrbitFactor = 0.02;
 
     const routeMap = {
       earth: { from: 'earth', to: 'earth', arc: 6, speed: 0.006 },
@@ -382,16 +384,19 @@
       missionLayer.add(totalLine, doneLine, probe, targetHalo);
       scene.add(missionLayer);
       missionProgress = 0;
+      missionMode = true;
 
-      const destination = worldForBody(route.to);
-      focusGoal.copy(destination);
-      const dist = Math.max(destination.length() * 0.6, 24);
-      cameraGoal.copy(destination.clone().add(new THREE.Vector3(dist * 0.42, dist * 0.3, dist * 0.55)));
+      const frameCenter = start.clone().add(end).multiplyScalar(0.5);
+      const span = start.distanceTo(end);
+      const dist = Math.max(32, span * 1.45);
+      focusGoal.copy(frameCenter);
+      cameraGoal.copy(frameCenter.clone().add(new THREE.Vector3(dist * 0.6, dist * 0.34, dist * 0.7)));
     }
 
     function focusPlanet(planet) {
       if (!controls) return;
       if (!planetMeshes[planet] && planet !== 'moon') return;
+      missionMode = false;
       const target = worldForBody(planet);
       focusGoal.copy(target);
       const dist = Math.max(target.length() * 0.55, 24);
@@ -402,10 +407,11 @@
     function animate() {
       requestAnimationFrame(animate);
       if (!paused) {
+        const orbitFactor = missionMode ? missionOrbitFactor : 1;
         sun.rotation.y += 0.003;
         Object.entries(planetMeshes).forEach(([name, obj]) => {
           const cfg = planetsConf[name];
-          obj.angle += cfg.speed;
+          obj.angle += cfg.speed * orbitFactor;
           obj.mesh.position.set(Math.cos(obj.angle) * cfg.orbit, 0, Math.sin(obj.angle) * cfg.orbit);
           obj.mesh.rotation.y += 0.008;
         });
@@ -424,6 +430,15 @@
         probe.lookAt(next);
         if (halo) halo.rotation.z += 0.01;
         if (missionProgress >= 1 && !paused) missionProgress = 0;
+        if (missionProgress <= 0.005 || missionProgress >= 0.995) {
+          const fromBody = worldForBody(route.from);
+          const toBody = worldForBody(route.to);
+          const center = fromBody.clone().add(toBody).multiplyScalar(0.5);
+          const span = fromBody.distanceTo(toBody);
+          const dist = Math.max(32, span * 1.45);
+          focusGoal.lerp(center, 0.5);
+          cameraGoal.lerp(center.clone().add(new THREE.Vector3(dist * 0.6, dist * 0.34, dist * 0.7)), 0.5);
+        }
       }
       if (controls) {
         focusTarget.lerp(focusGoal, 0.08);
