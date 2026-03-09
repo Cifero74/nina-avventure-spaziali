@@ -317,6 +317,10 @@
 
     function startExperience() {
       try {
+        if (/HeadlessChrome/i.test(navigator.userAgent)) {
+          fallbackEl.style.display = 'flex';
+          return;
+        }
         const testCanvas = document.createElement('canvas');
         const gl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
         if (!gl) throw new Error('WebGL unavailable');
