@@ -218,6 +218,23 @@
     let camera, scene, renderer, controls, sun;
     const planetMeshes = {};
     const focusTarget = new THREE.Vector3(0, 0, 0);
+    const cameraGoal = new THREE.Vector3(0, 35, 90);
+    const focusGoal = new THREE.Vector3(0, 0, 0);
+    const defaultCamera = new THREE.Vector3(0, 35, 90);
+    const moonOffset = new THREE.Vector3(4.2, 0, 0);
+    let missionLayer = null;
+    let missionCurve = null;
+    let missionPoints = [];
+    let missionProgress = 0;
+
+    const routeMap = {
+      earth: { from: 'earth', to: 'earth', arc: 6, speed: 0.006 },
+      moon: { from: 'earth', to: 'moon', arc: 8, speed: 0.008 },
+      mars: { from: 'earth', to: 'mars', arc: 14, speed: 0.0058 },
+      jupiter: { from: 'earth', to: 'jupiter', arc: 20, speed: 0.0048 },
+      saturn: { from: 'earth', to: 'saturn', arc: 24, speed: 0.0043 },
+      pluto: { from: 'earth', to: 'pluto', arc: 30, speed: 0.0038 }
+    };
 
     function initThree() {
       const w = sceneEl.clientWidth;
@@ -292,9 +309,94 @@
       animate();
     }
 
+    function worldForBody(name) {
+      if (name === 'moon') {
+        if (!planetMeshes.earth) return new THREE.Vector3();
+        return planetMeshes.earth.mesh.position.clone().add(moonOffset);
+      }
+      if (!planetMeshes[name]) return new THREE.Vector3();
+      return planetMeshes[name].mesh.position.clone();
+    }
+
+    function clearMissionLayer() {
+      if (!missionLayer || !scene) return;
+      scene.remove(missionLayer);
+      missionLayer.traverse((node) => {
+        if (node.geometry) node.geometry.dispose();
+        if (node.material) {
+          if (Array.isArray(node.material)) node.material.forEach((m) => m.dispose());
+          else node.material.dispose();
+        }
+      });
+      missionLayer = null;
+      missionCurve = null;
+      missionPoints = [];
+      missionProgress = 0;
+    }
+
+    function buildMissionLayer(mission) {
+      if (!scene || !controls) return;
+      clearMissionLayer();
+      const route = routeMap[mission.planet] || routeMap.earth;
+      const start = worldForBody(route.from);
+      const end = worldForBody(route.to);
+      if (start.distanceTo(end) < 0.1) {
+        end.add(new THREE.Vector3(5.5, 0, 2.4));
+      }
+      const mid = start.clone().lerp(end, 0.5);
+      const ctrl = mid.clone().add(new THREE.Vector3(0, route.arc, 0));
+      missionCurve = new THREE.QuadraticBezierCurve3(start, ctrl, end);
+      missionPoints = missionCurve.getPoints(180);
+
+      missionLayer = new THREE.Group();
+      const totalGeom = new THREE.BufferGeometry().setFromPoints(missionPoints);
+      const totalLine = new THREE.Line(
+        totalGeom,
+        new THREE.LineDashedMaterial({ color: 0x64748b, dashSize: 1.5, gapSize: 0.8, transparent: true, opacity: 0.75 })
+      );
+      totalLine.computeLineDistances();
+
+      const doneGeom = new THREE.BufferGeometry().setFromPoints(missionPoints);
+      doneGeom.setDrawRange(0, 2);
+      const doneLine = new THREE.Line(
+        doneGeom,
+        new THREE.LineBasicMaterial({ color: 0x22d3ee, linewidth: 2 })
+      );
+      doneLine.name = 'doneLine';
+
+      const probe = new THREE.Mesh(
+        new THREE.SphereGeometry(0.65, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0xf8fafc, emissive: 0x334155, emissiveIntensity: 0.6 })
+      );
+      probe.position.copy(missionPoints[0]);
+      probe.name = 'probe';
+
+      const targetHalo = new THREE.Mesh(
+        new THREE.RingGeometry(1.8, 2.2, 32),
+        new THREE.MeshBasicMaterial({ color: 0x818cf8, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
+      );
+      targetHalo.position.copy(end);
+      targetHalo.rotation.x = -Math.PI / 2;
+      targetHalo.name = 'targetHalo';
+
+      missionLayer.add(totalLine, doneLine, probe, targetHalo);
+      scene.add(missionLayer);
+      missionProgress = 0;
+
+      const destination = worldForBody(route.to);
+      focusGoal.copy(destination);
+      const dist = Math.max(destination.length() * 0.6, 24);
+      cameraGoal.copy(destination.clone().add(new THREE.Vector3(dist * 0.42, dist * 0.3, dist * 0.55)));
+    }
+
     function focusPlanet(planet) {
-      if (!planetMeshes[planet] || !controls) return;
-      focusTarget.copy(planetMeshes[planet].mesh.position);
+      if (!controls) return;
+      if (!planetMeshes[planet] && planet !== 'moon') return;
+      const target = worldForBody(planet);
+      focusGoal.copy(target);
+      const dist = Math.max(target.length() * 0.55, 24);
+      cameraGoal.copy(target.clone().add(new THREE.Vector3(dist * 0.4, dist * 0.28, dist * 0.52)));
+      buildMissionLayer(selected);
     }
 
     function animate() {
@@ -308,8 +410,25 @@
           obj.mesh.rotation.y += 0.008;
         });
       }
+      if (missionCurve && missionLayer) {
+        const route = routeMap[selected.planet] || routeMap.earth;
+        if (!paused) missionProgress = Math.min(1, missionProgress + route.speed);
+        const doneLine = missionLayer.getObjectByName('doneLine');
+        const probe = missionLayer.getObjectByName('probe');
+        const halo = missionLayer.getObjectByName('targetHalo');
+        const idx = Math.max(2, Math.floor((missionPoints.length - 1) * missionProgress));
+        doneLine.geometry.setDrawRange(0, idx);
+        const current = missionCurve.getPoint(Math.min(missionProgress, 0.999));
+        const next = missionCurve.getPoint(Math.min(missionProgress + 0.01, 1));
+        probe.position.copy(current);
+        probe.lookAt(next);
+        if (halo) halo.rotation.z += 0.01;
+        if (missionProgress >= 1 && !paused) missionProgress = 0;
+      }
       if (controls) {
-        controls.target.lerp(focusTarget, 0.04);
+        focusTarget.lerp(focusGoal, 0.08);
+        controls.target.copy(focusTarget);
+        camera.position.lerp(cameraGoal, 0.05);
         controls.update();
       }
       renderer.render(scene, camera);
@@ -337,8 +456,10 @@
 
     document.getElementById('reset-camera').onclick = () => {
       if (!camera || !controls) return;
-      camera.position.set(0, 35, 90);
+      camera.position.copy(defaultCamera);
       focusTarget.set(0, 0, 0);
+      focusGoal.set(0, 0, 0);
+      cameraGoal.copy(defaultCamera);
       controls.update();
     };
 
